@@ -22,21 +22,25 @@ class GameRoom:
             await server.serve_forever()
 
     async def echo(self, websocket):
-        client_id = uuid4()
+        client_id = str(uuid4())
         self.connections[client_id] = websocket
+        print(f"Client {client_id} connected")
         async for message in websocket:
             data = json.loads(message)
             payload = {}
-            if data['type'] == 'create_game':
+            if data['type'] == 'game_create':
+                print("Creating game")
                 await self.create_game(websocket)
-
-            elif data['type'] == 'join_game':
+            elif data['type'] == 'game_join':
+                print("Joining game")
                 await self.join_game(data, websocket)
 
             elif data['type'] == 'move':
-                await self.handle_move(data)
+                print("Moving")
+                await self.handle_move(data, websocket)
 
             elif data['type'] == 'reset_game':
+                print("Resetting game")
                 pass
 
     async def join_game(self, data, websocket):
@@ -46,11 +50,13 @@ class GameRoom:
         game['player2'] = websocket
         payload['type'] = 'game_join'
         payload['success'] = True
+        payload['game_id'] = game_id
+        payload["player"] = "O"
         await websocket.send(json.dumps(payload))
 
     async def create_game(self, websocket):
         payload = {}
-        game_id = uuid4()
+        game_id = str(uuid4())
         new_game = TicTacToe()
         self.games[game_id] = {
             "game": new_game,
@@ -59,46 +65,77 @@ class GameRoom:
         }
         payload['success'] = True
         payload['game_id'] = game_id
+        payload['type'] = 'game_create'
+        payload['player'] = "X"
+
+        print(self.games[game_id])
         await websocket.send(json.dumps(payload))
 
     async def handle_move(self, data, websocket):
         payload = {}
         game_id = data['game_id']
-        game = self.games[game_id]['game']
+        game_room = self.games[game_id]
+        game = game_room['game']
 
         row, col = data['row'], data['column']
 
-        game_object = game['game']
+        # Determine which player is making the move based on websocket
+        if websocket == game_room['player1']:
+            moving_player = "X"
+        elif websocket == game_room['player2']:
+            moving_player = "O"
+        else:
+            payload['type'] = 'error'
+            payload['message'] = 'You are not part of this game!'
+            await websocket.send(json.dumps(payload))
+            return
 
-        current_player = game_object.get_current_player()
+        # Check if it's this player's turn
+        current_player = game.get_current_player()
+        if moving_player != current_player:
+            payload['type'] = 'error'
+            payload['message'] = 'Not your turn!'
+            await websocket.send(json.dumps(payload))
+            return
 
-        if not game_object.place_piece(row, col, current_player):
+        if not game.place_piece(row, col, current_player):
             payload['type'] = 'error'
             payload['message'] = 'Invalid move!'
             await websocket.send(json.dumps(payload))
+            return
 
-        winner = game_object.get_winner()
+        winner = game.get_winner()
         if winner:
+            game.print_board()
             payload['type'] = 'result'
             payload['result'] = 'win'
             payload['player'] = current_player
+            payload['row'] = row
+            payload['column'] = col
 
         tie = game.check_tie()
         if tie:
             payload['type'] = 'result'
             payload['result'] = 'tie'
+            payload['player'] = current_player
+            payload['row'] = row
+            payload['column'] = col
 
-        if winner or tie:
-            payload_json = json.dumps(payload)
-
-        else:
-            game_object.switch_turns()
+        if not winner and not tie:
+            game.switch_turns()
             payload['type'] = 'switch_turns'
-            payload['turn'] = game_object.get_current_player()
+            payload['turn'] = game.get_current_player()
+            payload['row'] = row
+            payload['column'] = col
+            payload['player'] = current_player
 
-        socket1, socket2 = self.games['player1'], self.games['player2']
-        await socket1.send(payload_json)
-        await socket2.send(payload_json)
+        socket1, socket2 = game_room['player1'], game_room['player2']
+
+        payload_json = json.dumps(payload)
+        if socket1:
+            await socket1.send(payload_json)
+        if socket2:
+            await socket2.send(payload_json)
 
 
 if __name__ == "__main__":
